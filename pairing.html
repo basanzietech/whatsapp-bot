@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pair Shakira-MD</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        input { padding: 10px; margin: 10px; width: 200px; }
+        button { padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Pair Shakira-MD</h1>
+        <p>Enter your WhatsApp number:</p>
+        <input type="tel" id="number" placeholder="255123456789">
+        <button onclick="startPairing()">Generate QR Code</button>
+        <div id="qrcode"></div>
+    </div>
+
+    <script>
+        function startPairing() {
+            const number = document.getElementById('number').value
+            if (!number) return alert('Please enter a valid number')
+            
+            // In real implementation, handle QR generation with server
+            alert('Check your console/terminal for QR code!')
+        }
+    </script>
+</body>
+</html
