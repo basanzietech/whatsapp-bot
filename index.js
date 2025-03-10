@@ -1,244 +1,165 @@
-// IMPORT MODULES
-const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, isJidGroup } = require('@adiwajshing/baileys');
-const express = require('express');
-const qrcode = require('qrcode-terminal');
+const { makeWASocket, useMultiFileAuthState, delay } = require('@whiskeysockets/baileys')
+const qrcode = require('qrcode-terminal')
+const fs = require('fs')
+const express = require('express')
+const app = express()
+const PORT = 3001
 
-// CONFIGURATION
-const OWNER_NUMBER = '+255657779003';
-const PORT = process.env.PORT || 3000;
-const COMMAND_PREFIX = '!';
+// Owner information
+const ownerNumber = '255657779003@s.whatsapp.net'
 
-// In-memory pairing store: { pairingCode: phoneNumber }
-const pairingCodes = {};
+// Configure express for pairing page
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/pairing.html')
+})
 
-// SETUP EXPRESS SERVER KWA PAIRING
-const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-// Route ya GET: Fom ya pairing
-app.get('/pair', (req, res) => {
-  res.send(`
-    <html>
-      <head><title>Pair Your Bot</title></head>
-      <body>
-         <h1>Pair Your Bot (shakira-md)</h1>
-         <form action="/pair" method="post">
-            <label for="number">Enter your WhatsApp number (with country code):</label>
-            <input type="text" name="number" required/>
-            <button type="submit">Pair</button>
-         </form>
-      </body>
-    </html>
-  `);
-});
-
-// Route ya POST: Anapopokea namba, itazalisha pairing code
-app.post('/pair', (req, res) => {
-  const number = req.body.number;
-  // Zalisha code ya pairing (6-digit)
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
-  pairingCodes[code] = number;
-  res.send(`Your pairing code is: <b>${code}</b>. Please send this code to the bot on WhatsApp to complete pairing.`);
-});
-
-app.listen(PORT, () => {
-  console.log(`Pairing server running on port ${PORT}`);
-});
-
-// START BOT USING BAILLEYS
 async function startBot() {
-  // Setup authentication state
-  const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-  const { version } = await fetchLatestBaileysVersion();
-
+  const { state, saveCreds } = await useMultiFileAuthState('session')
+  
   const sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: true // QR code itaonyeshwa terminal wakati wa kwanza
-  });
+  auth: state,
+  printQRInTerminal: false,
+  logger: undefined, // Hii ndio njia rahisi zaidi
+  browser: ['Shakira-MD', 'Safari', '1.0.0']
+})
 
-  sock.ev.on('creds.update', saveCreds);
-
-  // HANDLE MESSAGE EVENTS
-  sock.ev.on('messages.upsert', async m => {
-    try {
-      const msg = m.messages[0];
-      // Skip messages without content au messages za status broadcast
-      if (!msg.message || (msg.key && msg.key.remoteJid === 'status@broadcast')) return;
-
-      const sender = msg.key.remoteJid;
-      const isGroupMsg = isJidGroup(sender);
-      let text = '';
-
-      // Pata text kutoka message (simple au extended)
-      if (msg.message.conversation) {
-        text = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) {
-        text = msg.message.extendedTextMessage.text;
-      }
-      text = text.trim();
-
-      // KAZI YA PAIRING: Ikiwa ujumbe ni pairing code
-      if (pairingCodes[text]) {
-        // Angalia ikiwa sender inahusiana na namba aliyotolewa
-        // WhatsApp sender id ina muundo kama "2547xxxxxxx@s.whatsapp.net"
-        const expectedNumber = pairingCodes[text];
-        if (sender.includes(expectedNumber.replace('+', ''))) {
-          await sock.sendMessage(sender, { text: "*shakira-md* is connected successful\n_for support contact us " + OWNER_NUMBER + "_\nWhatsapp Channel https://hapa_ni_link_ya_channel" });
-          console.log(`Paired with ${sender}`);
-          delete pairingCodes[text];
-          return;
-        }
-      }
-
-      // AUTO-DELETION YA LINKS KATIKA MAKUNDI
-      if (isGroupMsg && /https?:\/\/\S+/i.test(text)) {
-        try {
-          // Futa ujumbe unaoambatana na link
-          await sock.sendMessage(sender, { delete: msg.key });
-          // Tuma onyo kwa sender
-          await sock.sendMessage(sender, { text: `Onyo: Hutaruhusu kutuma links hapa!` });
-          return;
-        } catch (e) {
-          console.error('Error deleting message: ', e);
-        }
-      }
-
-      // COMMAND HANDLING: Amri zinazoanza na prefix (kama !)
-      if (text.startsWith(COMMAND_PREFIX)) {
-        const args = text.slice(COMMAND_PREFIX.length).trim().split(/ +/);
-        const command = args.shift().toLowerCase();
-
-        switch (command) {
-          case 'help': {
-            const helpMessage = `*shakira-md Bot Commands:*\n
-!help - Display this help message
-!owner - Show owner contact info
-!ping - Check bot responsiveness
-!delete - Delete a message (reply to the message you want to delete)
-!kick - Kick a user (usage: !kick @user)
-!promote - Promote a user to admin (usage: !promote @user)
-!demote - Demote an admin (usage: !demote @user)`;
-            await sock.sendMessage(sender, { text: helpMessage });
-            break;
-          }
-          case 'owner': {
-            await sock.sendMessage(sender, { text: `Owner: ${OWNER_NUMBER}` });
-            break;
-          }
-          case 'ping': {
-            await sock.sendMessage(sender, { text: 'pong' });
-            break;
-          }
-          case 'delete': {
-            // Inategemea kama mtumiaji amefanya reply kwa ujumbe unaotaka kufutwa
-            const quoted = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo && msg.message.extendedTextMessage.contextInfo.stanzaId;
-            if (quoted) {
-              await sock.sendMessage(sender, { delete: { id: quoted, remoteJid: sender } });
-              await sock.sendMessage(sender, { text: 'Ujumbe umefutwa.' });
-            } else {
-              await sock.sendMessage(sender, { text: 'Reply to a message to delete it.' });
-            }
-            break;
-          }
-          case 'kick': {
-            if (!isGroupMsg) {
-              await sock.sendMessage(sender, { text: 'Amri hii inatumika tu kwenye makundi.' });
-              break;
-            }
-            // Tumia mentionedJid kutoka extendedTextMessage context
-            const mentioned = msg.message.extendedTextMessage &&
-                              msg.message.extendedTextMessage.contextInfo &&
-                              msg.message.extendedTextMessage.contextInfo.mentionedJid;
-            if (mentioned && mentioned.length > 0) {
-              try {
-                await sock.groupParticipantsUpdate(sender, mentioned, 'remove');
-                await sock.sendMessage(sender, { text: 'Umeondoa mchango kwenye kikundi.' });
-              } catch (e) {
-                await sock.sendMessage(sender, { text: 'Imeshindikana kuondoa mchango.' });
-              }
-            } else {
-              await sock.sendMessage(sender, { text: 'Tafadhali taja mchango wa kikundi.' });
-            }
-            break;
-          }
-          case 'promote': {
-            if (!isGroupMsg) {
-              await sock.sendMessage(sender, { text: 'Amri hii inatumika tu kwenye makundi.' });
-              break;
-            }
-            const mentioned = msg.message.extendedTextMessage &&
-                              msg.message.extendedTextMessage.contextInfo &&
-                              msg.message.extendedTextMessage.contextInfo.mentionedJid;
-            if (mentioned && mentioned.length > 0) {
-              try {
-                await sock.groupParticipantsUpdate(sender, mentioned, 'promote');
-                await sock.sendMessage(sender, { text: 'Mchango amepewa cheo cha admin.' });
-              } catch (e) {
-                await sock.sendMessage(sender, { text: 'Imeshindikana kupromote mchango.' });
-              }
-            } else {
-              await sock.sendMessage(sender, { text: 'Tafadhali taja mchango wa kikundi.' });
-            }
-            break;
-          }
-          case 'demote': {
-            if (!isGroupMsg) {
-              await sock.sendMessage(sender, { text: 'Amri hii inatumika tu kwenye makundi.' });
-              break;
-            }
-            const mentioned = msg.message.extendedTextMessage &&
-                              msg.message.extendedTextMessage.contextInfo &&
-                              msg.message.extendedTextMessage.contextInfo.mentionedJid;
-            if (mentioned && mentioned.length > 0) {
-              try {
-                await sock.groupParticipantsUpdate(sender, mentioned, 'demote');
-                await sock.sendMessage(sender, { text: 'Mchango ameondolewa cheo cha admin.' });
-              } catch (e) {
-                await sock.sendMessage(sender, { text: 'Imeshindikana demote mchango.' });
-              }
-            } else {
-              await sock.sendMessage(sender, { text: 'Tafadhali taja mchango wa kikundi.' });
-            }
-            break;
-          }
-          default:
-            await sock.sendMessage(sender, { text: 'Amri haijulikani. Tumia !help kwa orodha ya amri.' });
-        }
-      }
-    } catch (error) {
-      console.error('Error processing message: ', error);
-    }
-  });
-
-  // STATUS UPDATE HANDLING (SIMULATION)
-  // Kumbuka: WhatsApp haijaruhusu reactions kwenye status kama kawaida – sehemu hii ni mfano
-  sock.ev.on('statuses.update', async statuses => {
-    for (const status of statuses) {
-      try {
-        // Jaribu kutuma "reaction" (hii inaweza kuwa simulation kulingana na API)
-        await sock.sendMessage(status.id, { 
-          react: { 
-            text: '🧡', 
-            key: { id: status.id, fromMe: false, remoteJid: status.id } 
-          } 
-        });
-      } catch (e) {
-        console.error('Error reacting to status: ', e);
-      }
-    }
-  });
-
-  // HANDLE CONNECTION UPDATES
   sock.ev.on('connection.update', (update) => {
-    const { connection } = update;
-    console.log('Connection update: ', update);
-    if(connection === 'close') {
-      // Attempt to reconnect
-      startBot();
+    const { connection, qr } = update
+    if (qr) {
+      qrcode.generate(qr, { small: true })
     }
-  });
+    if (connection === 'open') {
+      console.log('Bot connected!')
+      sendSuccessMessage(sock)
+    }
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+
+  // Auto view and react to status updates
+  sock.ev.on('status-update', async (update) => {
+    if (update.status) {
+      await sock.readMessages([update.status.key])
+      await sock.sendMessage(update.status.jid, { react: { text: '🧡', key: update.status.key } })
+    }
+  })
+
+  // Message handling
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const msg = messages[0]
+    if (!msg.message) return
+
+    // Handle group links
+    if (msg.key.remoteJid.endsWith('@g.us')) {
+      const linkRegex = /https?:\/\/[^\s]+/gi
+      if (msg.message.conversation?.match(linkRegex)) {
+        await handleLinks(sock, msg)
+      }
+    }
+
+    // Handle commands
+    const command = msg.message.conversation?.toLowerCase()
+    if (command?.startsWith('!')) {
+      await handleCommands(sock, msg)
+    }
+  })
 }
 
-startBot();
+// Handle link removal and warnings
+async function handleLinks(sock, msg) {
+  try {
+    await sock.sendMessage(msg.key.remoteJid, { delete: msg.key })
+    await sock.sendMessage(
+      msg.key.remoteJid, 
+      { text: `@${msg.key.participant.split('@')[0]} Links are not allowed!`, 
+        mentions: [msg.key.participant] 
+      }
+    )
+  } catch (error) {
+    console.error('Error handling links:', error)
+  }
+}
+
+// Command handler
+async function handleCommands(sock, msg) {
+  const command = msg.message.conversation.toLowerCase().split(' ')[0]
+  const args = msg.message.conversation.split(' ').slice(1)
+
+  switch(command) {
+    case '!help':
+      await sock.sendMessage(msg.key.remoteJid, {
+        text: `📜 *Available Commands* 📜
+!help - Show all commands
+!owner - Show owner info
+!delete - Delete quoted message
+!kick @user - Remove user from group
+!promote @user - Make user admin
+!demote @user - Remove admin status
+!ping - Check bot latency`
+      })
+      break
+
+    case '!owner':
+      await sock.sendMessage(msg.key.remoteJid, {
+        text: `👑 *Owner Information* 👑
+Number: +255657779003
+Support: +255657779003
+Channel: https://hapa_ni_link_ya_channel`
+      })
+      break
+
+    case '!delete':
+      if (msg.message.extendedTextMessage?.contextInfo?.quotedMessage) {
+        const quoted = msg.message.extendedTextMessage.contextInfo
+        await sock.sendMessage(msg.key.remoteJid, { delete: quoted.stanzaId })
+      }
+      break
+
+    case '!kick':
+      if (args[0]) await handleGroupAction(sock, msg, 'remove', args[0])
+      break
+
+    case '!promote':
+      if (args[0]) await handleGroupAction(sock, msg, 'promote', args[0])
+      break
+
+    case '!demote':
+      if (args[0]) await handleGroupAction(sock, msg, 'demote', args[0])
+      break
+
+    case '!ping':
+      const start = Date.now()
+      await sock.sendMessage(msg.key.remoteJid, { text: 'Pong!' })
+      const latency = Date.now() - start
+      await sock.sendMessage(msg.key.remoteJid, { text: `🏓 Latency: ${latency}ms` })
+      break
+  }
+}
+
+// Group action handler
+async function handleGroupAction(sock, msg, action, userJid) {
+  try {
+    userJid = userJid.replace('@', '') + '@s.whatsapp.net'
+    await sock.groupParticipantsUpdate(
+      msg.key.remoteJid,
+      [userJid],
+      action
+    )
+  } catch (error) {
+    console.error(`Error ${action} user:`, error)
+  }
+}
+
+// Send success message after connection
+async function sendSuccessMessage(sock) {
+  await sock.sendMessage(
+    ownerNumber,
+    { text: `*shakira-md* is connected successfully\n_for support contact us +255657779003_\nWhatsApp Channel: https://hapa_ni_link_ya_channel` }
+  )
+}
+
+// Start server and bot
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`)
+  startBot().catch(err => console.error('Bot startup error:', err))
+})
