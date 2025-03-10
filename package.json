@@ -1,14 +1,25 @@
 {
   "name": "shakira-md",
   "version": "1.0.0",
-  "description": "WhatsApp Bot using Baileys with auto status view, link deletion and pairing system",
+  "description": "WhatsApp Bot with Advanced Features",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "@adiwajshing/baileys": "^4.0.0",
+    "@whiskeysockets/baileys": "^6.2.3",
     "express": "^4.18.2",
     "qrcode-terminal": "^0.12.0"
-  }
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
+  "keywords": [
+    "whatsapp-bot",
+    "baileys",
+    "shakira-md"
+  ],
+  "author": "Benjamini Omary",
+  "license": "ISC"
 }
