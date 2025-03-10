@@ -1,50 +1,147 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+// index.js
+const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@adiwajshing/baileys')
+const fs = require('fs')
+const path = require('path')
+const readline = require('readline')
 
-// Tumia LocalAuth kuhifadhi session yako ili usifanye scan QR kila wakati
-const client = new Client({
-    authStrategy: new LocalAuth()
-});
+// CONFIGURATION
+const SESSION_ID = 'levanter_94fa5862090fb47c387dbf8d7c6cb83cd' // Jaza session ID yako hapa
+const OWNER_NUMBER = '255657779003@s.whatsapp.net'
+const PREFIX = '!'
 
-// Wakati QR code inapotolewa
-client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true });
-    console.log('Tafadhali scan QR code ili uingie kwenye WhatsApp.');
-});
+async function startBot() {
+    // Weka hali ya authentication
+    const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'session', SESSION_ID))
 
-// Bot iko tayari
-client.on('ready', () => {
-    console.log('Client iko tayari!');
-});
+    // Tengeneza socket
+    const { version } = await fetchLatestBaileysVersion()
+    const sock = makeWASocket({
+        version,
+        auth: state,
+        printQRInTerminal: false,
+        browser: ['Shakira-MD', 'Chrome', '122.0.0']
+    })
 
-// Kusikiliza ujumbe
-client.on('message', async (msg) => {
-    // Hakikisha ni ujumbe kutoka group (kama id ina '@g.us')
-    if (msg.from.endsWith('@g.us')) {
-        // Tambua URLs kwa kutumia regex
-        const urlRegex = /(https?:\/\/[^\s]+)/g;
-        if (urlRegex.test(msg.body)) {
-            let chat = await msg.getChat();
-            // Katika groups, msg.author inahifadhi id ya mtumaji, ikiwa sio ujumbe wa private
-            let senderId = msg.author ? msg.author : msg.from;
+    // Hifadhi mabadiliko ya credentials
+    sock.ev.on('creds.update', saveCreds)
 
-            // Pata taarifa za group kuhusu washiriki
-            let participants = chat.participants;
-            let senderParticipant = participants.find(p => p.id._serialized === senderId);
-
-            // Angalia kama mtumaji sio admin (kama si admin wala super admin)
-            if (senderParticipant && !senderParticipant.isAdmin && !senderParticipant.isSuperAdmin) {
-                try {
-                    // Ongeza ufuatiliaji: futa ujumbe kwa wote (inahitaji kuwa admin)
-                    await msg.delete(true); // true: kufuta ujumbe kwa wote
-                    console.log(`Ujumbe kutoka ${senderId} ulio na link umefutwa.`);
-                } catch (err) {
-                    console.error('Kosa wakati wa kufuta ujumbe:', err);
-                }
-            }
+    // Usimamizi wa unganisho
+    sock.ev.on('connection.update', (update) => {
+        if (update.connection === 'open') {
+            console.log('✅ Imeunganishwa kikamilifu!')
+            sock.sendMessage(OWNER_NUMBER, { text: 'Bot imeanza kazi!' })
         }
+    })
+
+    // Kusimamia ujumbe
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0]
+        if (!msg.message || msg.key.fromMe) return
+
+        const jid = msg.key.remoteJid
+        const userJid = msg.key.participant || jid
+        const text = msg.message.conversation || ''
+
+        try {
+            if (text.startsWith(PREFIX)) {
+                const [cmd, ...args] = text.slice(1).split(' ')
+                await handleCommand(sock, { cmd: cmd.toLowerCase(), jid, userJid, msg })
+            }
+        } catch (error) {
+            console.error('Kosa:', error)
+        }
+    })
+
+    // Kusimamia mabadiliko ya kikundi
+    sock.ev.on('group-participants.update', async (update) => {
+        console.log('Mabadiliko ya kikundi:', update)
+    })
+
+    // Kuona status automatically
+    sock.ev.on('status.update', (update) => {
+        if (update.jid === OWNER_NUMBER) {
+            console.log('Status ya mmiliki imesasishwa:', update)
+        }
+    })
+}
+
+// Kazi za kusimamia amri
+async function handleCommand(sock, { cmd, jid, userJid, msg }) {
+    const isGroup = jid.endsWith('@g.us')
+    const isAdmin = await checkAdmin(sock, jid, userJid)
+    const isOwner = userJid === OWNER_NUMBER
+
+    switch(cmd) {
+        case 'kick':
+            if (isGroup && (isAdmin || isOwner)) {
+                const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid
+                if (mentioned) await sock.groupParticipantsUpdate(jid, mentioned, 'remove')
+            }
+            break
+
+        case 'promote':
+            if (isGroup && isOwner) {
+                const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid
+                if (mentioned) await sock.groupParticipantsUpdate(jid, mentioned, 'promote')
+            }
+            break
+
+        case 'demote':
+            if (isGroup && isOwner) {
+                const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid
+                if (mentioned) await sock.groupParticipantsUpdate(jid, mentioned, 'demote')
+            }
+            break
+
+        case 'delete':
+            if (msg.message?.extendedTextMessage?.contextInfo?.stanzaId) {
+                await sock.sendMessage(jid, {
+                    delete: {
+                        id: msg.message.extendedTextMessage.contextInfo.stanzaId,
+                        remoteJid: jid,
+                        fromMe: false
+                    }
+                })
+            }
+            break
+
+        case 'ping':
+            await sock.sendMessage(jid, { text: '🏓 Pong!' })
+            break
+
+        case 'owner':
+            await sock.sendMessage(jid, { text: `👑 Mmiliki: ${OWNER_NUMBER}` })
+            break
+
+        case 'help':
+            await showHelp(sock, jid)
+            break
     }
-});
+}
 
-client.initialize();
+// Kazi za kusaidia
+async function checkAdmin(sock, jid, userJid) {
+    try {
+        const metadata = await sock.groupMetadata(jid)
+        return metadata.participants.find(p => p.id === userJid)?.admin === 'admin'
+    } catch {
+        return false
+    }
+}
 
+async function showHelp(sock, jid) {
+    const helpText = `🛠 *Amri Zinazopatikana*:
+    
+${PREFIX}kick - Ondoa mtu (admin)
+${PREFIX}promote - Mfanye admin (owner)
+${PREFIX}demote - Ondoa admin (owner)
+${PREFIX}delete - Futa ujumbe
+${PREFIX}ping - Angalia utendaji
+${PREFIX}owner - Onyesha mmiliki
+${PREFIX}help - Onyesha msaada`
+
+    await sock.sendMessage(jid, { text: helpText })
+}
+
+// Anzisha bot
+startBot()
